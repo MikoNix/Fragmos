@@ -15,3 +15,7 @@ pre,code{ background:#071018; color:#cfeefe; border-radius:4px; }
 pre{ padding:12px; overflow:auto; }
 blockquote{ border-left:4px solid rgba(255,255,255,0.06); padding-left:12px; color:#9fb0bf }
 h1,h2,h3,h4{ color:#ffffff }
+/* Сброс Rouge/Pygments хайлайтера */
+.highlight, .highlighter-rouge { background: #071018 !important; }
+.highlight pre { background: transparent; }
+.highlight span { color: #cfeefe; }
