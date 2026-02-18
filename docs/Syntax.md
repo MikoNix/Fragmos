@@ -1,5 +1,4 @@
-<link rel="stylesheet" href="assets/css/dark.css">
-````markdown
+
 # Синтаксис Bock — полный справочник
 
 ## Общая структура
