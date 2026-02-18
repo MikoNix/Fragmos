@@ -1,5 +1,4 @@
 # Fragmos — рендер для Bock
-<link rel="stylesheet" href="assets/css/dark.css">
 
 Fragmos — это интерпретатор, который принимает Bock-код на вход и выдаёт `block.json` с готовой топологией блок-схемы.
 
