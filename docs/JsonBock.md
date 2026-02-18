@@ -1,5 +1,4 @@
 # Block Json Description
-<link rel="stylesheet" href="assets/css/dark.css">
 
 Каждая функция на Bock компилируется в `block.json` — файл, описывающий топологию блок-схемы: набор блоков и стрелок между ними.
 
