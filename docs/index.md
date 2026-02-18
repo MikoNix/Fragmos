@@ -1,3 +1,4 @@
+<link rel="stylesheet" href="assets/css/dark.css">
 
 [Домой](index.md) 
 ## Структура документации
