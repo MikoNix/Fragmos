@@ -1,0 +1,8 @@
+colorama
+streamlit
+graphviz 
+docxtpl 
+streamlit-material
+docx 
+docxtpl
+drawpyo

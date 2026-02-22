@@ -1,0 +1,19 @@
+<mxfile host="Drawpyo" modified="2026-02-22T11:26:31" agent="Python 3.12, Drawpyo 0.23" version="21.6.5" type="device">
+  <diagram name="Page-1" id="130968989702080">
+    <mxGraphModel dx="2037" dy="830" grid="1" gridSize="10" guides="1" toolTips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="130968986620208" value="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&#xa; aaaaaaaaaaaaaaaaaaaaaaaa" style="whiteSpace=wrap;rounded=0;dashed=0;html=1;" vertex="1" parent="1">
+  <mxGeometry x="100" y="100" width="240" height="80" as="geometry" />
+</mxCell>
+        <mxCell id="130968987325968" value="123" style="whiteSpace=wrap;rounded=1;dashed=0; whiteSpace=wrap; html=1; arcSize=50;arcSize=50;" vertex="1" parent="1">
+  <mxGeometry x="100" y="200" width="120" height="40" as="geometry" />
+</mxCell>
+        <mxCell id="130968986620688" value="if (sum + files[i] &lt;= s)" style="whiteSpace=wrap;rounded=0;dashed=0;html=1;shape=rhombus;" vertex="1" parent="1">
+  <mxGeometry x="100" y="300" width="120" height="50" as="geometry" />
+</mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
