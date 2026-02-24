@@ -96,13 +96,20 @@ class Pointer(drawpyo.diagram.Edge):
 
     def pointer_type(self):
         # возврат тела while к ромбу — идём слева
-        if self.source.position[1] > self.target.position[1] and type(self.target) == While:
+        if (self.source.position[1] > self.target.position[1]) and (type(self.target) == While):
             self.apply_style_string("endArrow=classic;html=1;rounded=0;exitX=0.5;exitY=1;entryX=0.5;entryY=0;")
             self.add_point_pos((self.source.position[0] - self.source.width // 2, self.source.position[1] + self.source.height + 10))
-            self.add_point_pos((self.target.position[0] - self.target.width // 2, self.target.position[1] - 10))
-            
+            self.add_point_pos((self.target.position[0] - self.target.width // 2, self.target.position[1] - 11))
             return
         self.apply_style_string("endArrow=none;html=1;rounded=0;exitX=0.5;exitY=1;entryX=0.5;entryY=0;")
+
+        #ФИКС While добавил waypoint, вроде работает, но может быть костыльным решением, нужно будет тестить на разных вариантах циклов и условий
+        if type(self.target) == Waypoint and type(self.source) == Proccess and self.source.position[1] > self.target.position[1]:
+            print(1111)
+            self.apply_style_string("endArrow=classic;html=1;rounded=0;exitX=0.5;exitY=1;entryX=0;entryY=0.5;")
+            self.add_point_pos((self.source.position[0] - self.source.width // 2, self.source.position[1] + self.source.height + 10))
+            self.add_point_pos((self.target.position[0] - self.target.width // 2, self.target.position[1]+2))
+            return
 
         if type(self.target) == Waypoint and type(self.source) != While:
             self.apply_style_string("endArrow=none;html=1;rounded=0;entryY=1;entryX=1;")
@@ -128,10 +135,10 @@ class Pointer(drawpyo.diagram.Edge):
 class Waypoint(drawpyo.diagram.Object):
     def __init__(self, page, x, y):
         super().__init__(page=page)
-        self.width = 2
-        self.height = 2
-        self.position = (x - 4, y - 4)
-        self.apply_style_string("waypoint;opacity=0;")
+        self.width = 4
+        self.height = 4
+        self.position = (x-4, y-4)
+        self.apply_style_string("shape=waypoint;sketch=0;fillStyle=solid;size=6;pointerEvents=1;points=[];fillColor=none;resizable=0;rotatable=0;perimeter=centerPerimeter;snapToPoint=1;shadow=1;opacity=0;")
 
 class Text_format(drawpyo.diagram.Object):
     def __init__(self, page, value, x, y, width=20, height=15):
@@ -269,6 +276,7 @@ class Render():
 
             elif node["type"] == "while":
                 while_obj = While(self.page, node["value"], 0, self.perv_obj_xy[1] + self.step_y, center_x=self.center_x)
+
                 if self.prev_obj:
                     self._connect(self.prev_obj, while_obj)
                 self._place(while_obj)
@@ -281,8 +289,8 @@ class Render():
 
                 body_r = Render(self.page, node["children"], x=0, y=while_obj.position[1] + while_obj.height, prev_obj=while_obj, entry_root="yes", center_x=while_cx, while_offset=self.while_offset - 40)
                 body_r.render()
-
-                Pointer(self.page, body_r.prev_obj, while_obj, while_offset=no_offset)
+                while_waypoint = Waypoint(self.page, while_cx, while_obj.position[1]-10)
+                Pointer(self.page, body_r.prev_obj, while_waypoint, while_offset=0 )
 
                 exit_y  = max(body_r.perv_obj_xy[1] + 40, while_obj.position[1] + while_obj.height + 40) + self.step_y
                 exit_wp = Waypoint(self.page, self.first_obj.position[0] + self.first_obj.width // 2, exit_y)
