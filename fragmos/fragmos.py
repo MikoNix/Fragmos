@@ -263,7 +263,7 @@ class Render():
                     no_end_y   = if_cy
 
                 merge_y  = max(yes_r.perv_obj_xy[1] + 40, no_end_y + 40) + self.step_y
-                waypoint = Waypoint(self.page, self.center_x, merge_y)
+                waypoint = Waypoint(self.page, self.center_x + 2, merge_y)
 
                 Pointer(self.page, yes_r.prev_obj, waypoint)
 
