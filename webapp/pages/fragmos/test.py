@@ -104,7 +104,7 @@ class Pointer(drawpyo.diagram.Edge):
         self.apply_style_string("endArrow=none;html=1;rounded=0;exitX=0.5;exitY=1;entryX=0.5;entryY=0;")
 
         #ФИКС While добавил waypoint, вроде работает, но может быть костыльным решением, нужно будет тестить на разных вариантах циклов и условий
-        if type(self.target) == Waypoint and type(self.source) == Proccess and self.source.position[1] > self.target.position[1]:
+        if type(self.target) == Waypoint and (type(self.source) == Proccess or type(self.source) == Execute) and self.source.position[1] > self.target.position[1]:
             print(1111)
             self.apply_style_string("endArrow=classic;html=1;rounded=0;exitX=0.5;exitY=1;entryX=0;entryY=0.5;")
             self.add_point_pos((self.source.position[0] - self.source.width // 2, self.source.position[1] + self.source.height + 10))
@@ -293,7 +293,7 @@ class Render():
                 Pointer(self.page, body_r.prev_obj, while_waypoint, while_offset=0 )
 
                 exit_y  = max(body_r.perv_obj_xy[1] + 40, while_obj.position[1] + while_obj.height + 40) + self.step_y
-                exit_wp = Waypoint(self.page, self.first_obj.position[0] + self.first_obj.width // 2, exit_y)
+                exit_wp = Waypoint(self.page, (self.first_obj.position[0] + self.first_obj.width // 2)+2, exit_y)
 
                 Pointer(self.page, while_obj, exit_wp, root="no", while_offset=self.while_offset)
 
@@ -310,24 +310,26 @@ nodes = [
     {"type": "start", "value": "Начало"},
     {"type": "process", "value": "i = 10"},
     {
-        "type": "if",
-        "value": "i > 5",
+        "type": "while",
+        "value": "i != 0",
         "children": [
-            {"type": "process", "value": "j = 5"},
             {
-                "type": "while",
-                "value": "j != 0",
+                "type": "if",
+                "value": "i > 5",
                 "children": [
-                    {"type": "process", "value": "output >> j"},
-                    {"type": "process", "value": "j = j - 1"},
+                    {
+                        "type": "while",
+                        "value": "j != 0",
+                        "children": [
+                            {"type": "process", "value": "output >> j"},
+                            {"type": "process", "value": "j = j - 1"},
+                        ]
+                    },
                 ]
             },
-        ],
-        "else_children": [
-            {"type": "process", "value": "output >> 'i <= 5'"},
+            {"type": "process", "value": "i = i - 1"},
         ]
     },
-    {"type": "execute", "value": "output >> 'Конец цикла'"},
     {"type": "stop", "value": "Конец"}
 ]
 
