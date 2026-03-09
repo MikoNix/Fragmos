@@ -8,11 +8,12 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 # ═══════════════════════════════════════════════════════════════════════════
 
 DEFAULT_CFG = {
+
     # Общее
     "gap_y":               40,   # вертикальный зазор между элементами
 
     # IF
-    "if_branch_gap":        0,   # горизонт. расстояние от края ромба до центра ветки
+    "if_branch_gap":        20,   # горизонт. расстояние от края ромба до центра ветки
     "if_branch_vgap":       15,   # вертикальный зазор: низ ромба → верх первого блока ветки
     "if_branch_min_gap":    40,  # мин. зазор между bbox-ами веток (не между центрами!)
 
@@ -25,13 +26,13 @@ DEFAULT_CFG = {
     "while_back_turn_gap":  20,   # вертикальный зазор: низ последнего блока → перемычка
     "while_back_top_gap":   15,   # вертикальный зазор: линия коридора → верх ромба
 
-    # BBox: True = рисовать (IF=жёлтый, WHILE=синий), False = скрыть
+    # BBox: True = рисовать (IF=жёлтый, WHILE=синий, FOR=фиолетовый), False = скрыть
     "show_bbox":            True,
 }
 
 
 def _while_corridor(cfg, depth):
-    """Ширина коридора для WHILE на заданной глубине вложенности."""
+    """Ширина коридора для WHILE/FOR на заданной глубине вложенности."""
     val = cfg["while_corridor_base"] - depth * cfg["while_corridor_step"]
     return max(val, cfg["while_corridor_min"])
 
@@ -60,6 +61,16 @@ class Execute(drawpyo.diagram.Object):
         self.height = 40 * m
         self.position = (cx - self.width // 2, y)
         self.apply_style_string("rounded=0;whiteSpace=wrap;html=1;")
+
+class Io(drawpyo.diagram.Object):
+    def __init__(self, page, value, cx, y):
+        super().__init__(page=page)
+        self.value = value
+        m = (len(value) // 50) + 1
+        self.width = 120 * m
+        self.height = 40 * m
+        self.position = (cx - self.width // 2, y)
+        self.apply_style_string("shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;")
 
 
 class ProcessShape(drawpyo.diagram.Object):
@@ -214,6 +225,7 @@ def _node_dims(node):
         'execute': (120*m, 40*m), 'process': (120*m, 40*m),
         'if':      (200*m, 80*m), 'while':   (200*m, 80*m),
         'for_default':      (120*m, 40*m),
+        'for_gost':         (120*m, 40*m),
         'loop_limit_start': (120*m, 40*m),
         'loop_limit_end':   (120*m, 40*m),
     }
@@ -227,7 +239,7 @@ def compute_bbox(nodes, cfg, depth=0):
       R — максимальный отступ вправо от center_x
       H — суммарная высота от верха первого элемента до низа последнего
 
-    depth — глубина вложенности WHILE (влияет на ширину коридоров).
+    depth — глубина вложенности WHILE/FOR (влияет на ширину коридоров).
     """
     gap = cfg['gap_y']
     if_vgap = cfg['if_branch_vgap']
@@ -251,13 +263,11 @@ def compute_bbox(nodes, cfg, depth=0):
             yl, yr, yh  = compute_bbox(yn, cfg, depth) if yn else (60, 60, 0)
             nl, nr, nh2 = compute_bbox(nn, cfg, depth) if nn else (60, 60, 0)
 
-
             rh_w2 = nw // 2
-            d_min_bbox = (yl + nr + min_gap) / 2 
-            d_min_rhombus = rh_w2  
+            d_min_bbox = (yl + nr + min_gap) / 2
+            d_min_rhombus = rh_w2 + cfg.get('if_branch_gap', 0)
             d = max(d_min_bbox, d_min_rhombus)
-            d = int(d) + 1  
-
+            d = int(d) + 1
 
             R = max(R, d + yr)   
             L = max(L, d + nl)   
@@ -265,19 +275,21 @@ def compute_bbox(nodes, cfg, depth=0):
             bh = max(yh if yn else 0, nh2 if nn else 0)
             H += nh + if_vgap + bh + gap
 
-        elif t == 'while':
+        elif t in ('while', 'for_default', 'for_gost'):
+            # WHILE и FOR используют одинаковую логику коридоров
             cn = node.get('children', [])
             child_depth = depth + 1
             cl, cr, ch = (compute_bbox(cn, cfg, child_depth)
                           if cn else (nw // 2, nw // 2, 0))
             wc = _while_corridor(cfg, depth)
-            rh_w2 = nw // 2
+            fr_w2 = nw // 2
 
-            L = max(L, max(cl, rh_w2) + wc)
-            R = max(R, max(cr, rh_w2) + wc)
+            L = max(L, max(cl, fr_w2) + wc)
+            R = max(R, max(cr, fr_w2) + wc)
             H += nh + gap + ch + gap * 2 + gap
 
         else:
+            # loop_limit_start, loop_limit_end и другие простые блоки
             H += nh
 
     return L, R, H
@@ -294,7 +306,7 @@ class Renderer:
     center_x — центральная ось всех элементов этой ветки
     start_y  — верхняя координата первого элемента
     cfg      — словарь конфигурации (DEFAULT_CFG)
-    depth    — глубина вложенности WHILE (0 = корень)
+    depth    — глубина вложенности WHILE/FOR (0 = корень)
     """
 
     def __init__(self, page, nodes, center_x, start_y, cfg=None, depth=0):
@@ -341,8 +353,8 @@ class Renderer:
                 prev_obj = obj
                 self.y = _bot(obj) + self.cfg['gap_y']
 
-            elif t == 'for_default':
-                obj = ForDefault(self.page, node['value'], self.cx, self.y)
+            elif t == 'io':
+                obj = Io(self.page, node['value'], self.cx, self.y)
                 if prev_obj:
                     _edge(self.page, prev_obj, obj, _DOWN)
                 first = first or obj
@@ -350,6 +362,7 @@ class Renderer:
                 self.y = _bot(obj) + self.cfg['gap_y']
 
             elif t == 'loop_limit_start':
+                # Обработка блока начала цикла (ГОСТ) — просто блок в потоке
                 obj = LoopLimitStart(self.page, node['value'], self.cx, self.y)
                 if prev_obj:
                     _edge(self.page, prev_obj, obj, _DOWN)
@@ -358,12 +371,21 @@ class Renderer:
                 self.y = _bot(obj) + self.cfg['gap_y']
 
             elif t == 'loop_limit_end':
+                # Обработка блока конца цикла (ГОСТ) — просто блок в потоке
                 obj = LoopLimitEnd(self.page, node['value'], self.cx, self.y)
                 if prev_obj:
                     _edge(self.page, prev_obj, obj, _DOWN)
                 first = first or obj
                 prev_obj = obj
                 self.y = _bot(obj) + self.cfg['gap_y']
+
+            elif t == 'for_default':
+                if self.cfg.get('build_model') == 1:
+                    fst, lst = self._render_for_gost(node, prev_obj)
+                else:
+                    fst, lst = self._render_for_default(node, prev_obj)
+                first = first or fst
+                prev_obj = lst
 
             elif t == 'if':
                 fst, lst = self._render_if(node, prev_obj)
@@ -381,18 +403,7 @@ class Renderer:
 
     def _render_if(self, node, prev_obj):
         """
-        ── ИСПРАВЛЕНИЕ ПОЗИЦИОНИРОВАНИЯ ВЕТОК ──────────────────────────────
-          Условие непересечения:
-            левый край правой ветки  > правый край левой ветки + min_gap
-            (yes_cx - yl)            > (no_cx + nr) + min_gap
-
-          При yes_cx = cx + d, no_cx = cx - d:
-            (cx + d - yl) > (cx - d + nr) + min_gap
-            2d > yl + nr + min_gap
-            d > (yl + nr + min_gap) / 2
-
-          Также d >= rh_w2 (ветка не заходит внутрь ромба).
-
+        Рендерит IF-блок (ромб) с двумя ветками и точкой слияния.
         """
         cfg = self.cfg
         gap = cfg['gap_y']
@@ -417,12 +428,9 @@ class Renderer:
         nl, nr, nh2 = compute_bbox(nn, cfg, self.depth) if nn else (60, 60, 0)
 
         # ── Вычисляем d: расстояние от cx до центра каждой ветки ─────────
-        # Условие: bbox правой ветки не пересекает bbox левой ветки
-        # (yes_cx - yl) >= (no_cx + nr) + min_gap
-        # При yes_cx = cx+d, no_cx = cx-d:  2d >= yl + nr + min_gap
         min_gap = cfg['if_branch_min_gap']
         d_bbox = (yl + nr + min_gap) / 2   # от bbox-ов
-        d_rh   = rh_w2                     # минимум — хотя бы до края ромба
+        d_rh   = rh_w2 + cfg.get('if_branch_gap', 0)  # минимум — край ромба + зазор
         d = int(max(d_bbox, d_rh)) + 1
 
         yes_cx = cx + d   # центр правой ветки (ДА)
@@ -456,6 +464,7 @@ class Renderer:
         # ── Ветка НЕТ (влево) ────────────────────────────
         no_last  = None
         no_first = None
+        LabelShape(self.page, "Нет", cx - rh_w2 - 48, rh_mid - 18)
         if nn:
             r = Renderer(self.page, nn, no_cx, bsy, cfg, depth=self.depth)
             no_first, no_last = r.render()
@@ -463,7 +472,6 @@ class Renderer:
                   "endArrow=none;html=1;rounded=0;"
                   "exitX=0;exitY=0.5;entryX=0.5;entryY=0;",
                   pts=[(no_cx, rh_mid)])
-            LabelShape(self.page, "Нет", cx - rh_w2 - 48, rh_mid - 18)
 
         # ── Точка слияния (строго под ромбом) ────────────
         merge_y = bsy + bh + gap
@@ -499,6 +507,9 @@ class Renderer:
     # ── WHILE ────────────────────────────────────────────────────────────
 
     def _render_while(self, node, prev_obj):
+        """
+        Рендерит WHILE-цикл (ромб) с телом цикла и возвратной стрелкой.
+        """
         cfg   = self.cfg
         gap   = cfg['gap_y']
         depth = self.depth
@@ -580,29 +591,166 @@ class Renderer:
         self.y = exit_y + gap
         return rh, exit_wp
 
+    # ── FOR DEFAULT ────────────────────────────────────────────────────────
+
+    def _render_for_default(self, node, prev_obj):
+        """
+        Рендерит FOR-цикл (шестиугольник) с телом цикла и возвратной стрелкой.
+        Структура аналогична WHILE.
+        """
+        cfg   = self.cfg
+        gap   = cfg['gap_y']
+        depth = self.depth
+
+        # Используем ту же систему коридоров, что и для WHILE
+        wc = _while_corridor(cfg, depth)
+
+        # ── Шестиугольник FOR ──────────────────────────────────────────
+        fr = ForDefault(self.page, node['value'], self.cx, self.y)
+        if prev_obj:
+            _edge(self.page, prev_obj, fr, _DOWN)
+
+        cx      = self.cx
+        fr_w2   = fr.width  // 2
+        fr_top  = fr.position[1]
+        fr_mid  = fr_top + fr.height // 2
+        fr_bot  = _bot(fr)
+
+        children    = node.get('children', [])
+        child_depth = depth + 1
+
+        # Вычисляем bbox тела цикла (рекурсивно)
+        cl, cr, ch = (compute_bbox(children, cfg, child_depth)
+                      if children else (fr_w2, fr_w2, 0))
+
+        # Координаты для возвратной стрелки (слева) и выхода (справа)
+        back_x = cx - max(cl, fr_w2) - wc
+        exit_x = cx + max(cr, fr_w2) + wc
+
+        # ── BBox визуализация (опционально) ─────────────────────────────
+        if cfg.get('show_bbox'):
+            L_bb    = max(cl, fr_w2) + wc
+            R_bb    = max(cr, fr_w2) + wc
+            total_h = fr.height + gap + ch + gap * 2
+            BBoxShape(
+                self.page,
+                cx - L_bb - 10, fr_top - 6,
+                L_bb + R_bb + 20, total_h + 12,
+                color="#e1d5e7", opacity=22)  # Фиолетовый оттенок для FOR
+
+        # ── Тело цикла (рендеринг дочерних узлов) ───────────────────────
+        last_child  = None
+        first_child = None
+
+        if children:
+            r = Renderer(self.page, children, cx, fr_bot + gap, cfg,
+                         depth=child_depth)
+            first_child, last_child = r.render()
+            # Соединяем вход FOR → первый элемент тела
+            _edge(self.page, fr, first_child, _DOWN)
+
+        # ── Обратная стрелка: последний элемент тела → верх FOR ─────────
+        if last_child:
+            lc_bot   = _bot(last_child)
+            lc_cx    = _cx(last_child)
+            turn_y   = lc_bot + cfg["while_back_turn_gap"]      # зазор снизу
+            entry_y  = fr_top - cfg["while_back_top_gap"]       # зазор сверху
+            _edge(self.page, last_child, fr,
+                  "endArrow=classic;html=1;rounded=0;"
+                  "exitX=0.5;exitY=1;entryX=0;entryY=0.5;",
+                  pts=[
+                      (lc_cx,  turn_y),   # вниз от последнего блока
+                      (back_x, entry_y),  # вверх к вершине FOR
+                  ])
+
+        # ── Стрелка выхода из цикла → waypoint ──────────────────────────
+        lc_bot_y = _bot(last_child) if last_child else fr_bot
+        exit_y   = lc_bot_y + gap * 2
+        exit_wp  = WaypointShape(self.page, cx, exit_y)
+
+        _edge(self.page, fr, exit_wp,
+              "endArrow=none;html=1;rounded=0;exitX=1;exitY=0.5;",
+              pts=[
+                  (exit_x, fr_mid),   # выход справа от шестиугольника
+                  (exit_x, exit_y),   # вниз до уровня слияния
+                  (cx,   exit_y),     # к центру
+              ])
+
+        # Обновляем текущую Y-координату для следующих элементов
+        self.y = exit_y + gap
+        return fr, exit_wp
+    
+
+# ═══════════════════════════════════════════════════════════════════════════
+# РАЗБИВКА НА ФУНКЦИИ
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _split_functions(nodes):
+    """
+    Разбивает список узлов на группы по границам START/STOP.
+    Возвращает список (page_name, nodes).
+    Каждая группа начинается с узла 'start' и заканчивается 'stop'.
+    """
+    result = []
+    current = []
+    current_name = "Схема"
+
+    for node in nodes:
+        if node['type'] == 'start':
+            if current:
+                result.append((current_name, current))
+            current = [node]
+            current_name = node['value']
+        elif node['type'] == 'stop':
+            current.append(node)
+            result.append((current_name, current))
+            current = []
+            current_name = "Схема"
+        else:
+            current.append(node)
+
+    if current:
+        result.append((current_name, current))
+
+    return result if result else [("Схема", nodes)]
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ЗАПУСК
 # ═══════════════════════════════════════════════════════════════════════════
 
-file_path = os.path.join(script_dir, "Xuita.xml")
-if os.path.exists(file_path):
-    os.remove(file_path)
+def generate(frg_path, out_path=None):
+    """
+    Генерирует .xml блок-схему из .frg файла.
 
+    frg_path — путь к .frg файлу
+    out_path — путь для сохранения .xml (по умолчанию рядом с .frg)
+    """
+    import sys
+    _pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _pkg_root not in sys.path:
+        sys.path.insert(0, _pkg_root)
+    from parser import parse_frg_file
 
+    cfg, nodes = parse_frg_file(frg_path)
 
-nodes=[]
+    if out_path is None:
+        base = os.path.splitext(frg_path)[0]
+        out_path = base + ".xml"
 
-cfg = DEFAULT_CFG
+    if os.path.exists(out_path):
+        os.remove(out_path)
 
-test = drawpyo.File()
-test.file_name = "Xuita.xml"
-test.file_path = script_dir
+    f = drawpyo.File()
+    f.file_name = os.path.basename(out_path)
+    f.file_path = os.path.dirname(os.path.abspath(out_path))
 
-page = drawpyo.Page(file=test)
+    for page_name, func_nodes in _split_functions(nodes):
+        page = drawpyo.Page(file=f)
+        page.name = page_name
+        Renderer(page, func_nodes, center_x=500, start_y=20, cfg=cfg).render()
 
-renderer = Renderer(page, nodes, center_x=500, start_y=20, cfg=cfg)
-renderer.render()
+    f.write()
 
-test.write()
-print("Готово! Файл: Xuita.xml")
+    print(f"Готово! Файл: {out_path}")
+    return out_path
