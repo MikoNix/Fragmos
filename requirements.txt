@@ -6,3 +6,4 @@ streamlit-material
 docx 
 docxtpl
 drawpyo
+openai
