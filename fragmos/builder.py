@@ -719,12 +719,13 @@ def _split_functions(nodes):
 # ЗАПУСК
 # ═══════════════════════════════════════════════════════════════════════════
 
-def generate(frg_path, out_path=None):
+def generate(frg_path, out_path=None, cfg_overrides=None):
     """
     Генерирует .xml блок-схему из .frg файла.
 
-    frg_path — путь к .frg файлу
-    out_path — путь для сохранения .xml (по умолчанию рядом с .frg)
+    frg_path      — путь к .frg файлу
+    out_path      — путь для сохранения .xml (по умолчанию рядом с .frg)
+    cfg_overrides — словарь с переопределениями настроек (необязательно)
     """
     import sys
     _pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -732,7 +733,12 @@ def generate(frg_path, out_path=None):
         sys.path.insert(0, _pkg_root)
     from parser import parse_frg_file
 
-    cfg, nodes = parse_frg_file(frg_path)
+    base_cfg = None
+    if cfg_overrides:
+        base_cfg = dict(DEFAULT_CFG)
+        base_cfg.update(cfg_overrides)
+
+    cfg, nodes = parse_frg_file(frg_path, base_cfg=base_cfg)
 
     if out_path is None:
         base = os.path.splitext(frg_path)[0]

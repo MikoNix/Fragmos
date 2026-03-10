@@ -9,9 +9,9 @@ def request(code_path):
         code = f.read()
 
     client = openai.OpenAI(
-        api_key="",
+        api_key="1",
         base_url="https://ai.api.cloud.yandex.net/v1",
-        project=""
+        project="1"
     )
 
     response = client.responses.create(

@@ -16,11 +16,13 @@ from request import request
 from builder import generate
 
 
-def run(code_path, out_xml=None):
+def run(code_path, out_xml=None, cfg_overrides=None):
     """
     Запускает полный пайплайн:
       1. request  — отправляет код в AI, получает .frg текст, сохраняет .frg файл
       2. builder  — читает .frg файл, генерирует .xml блок-схему
+
+    cfg_overrides — словарь с переопределениями настроек (необязательно)
 
     Возвращает путь к готовому .xml файлу.
     """
@@ -38,7 +40,7 @@ def run(code_path, out_xml=None):
 
     # ── Шаг 2: builder ───────────────────────────────────────────────────
     print(f"[2/2] Генерация блок-схемы...")
-    xml_path = generate(frg_path, out_xml)
+    xml_path = generate(frg_path, out_xml, cfg_overrides=cfg_overrides)
 
     return xml_path
 
