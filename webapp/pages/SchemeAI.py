@@ -4,9 +4,6 @@ import uuid
 import json
 import tempfile
 import shutil
-import base64
-import zlib
-import urllib.parse
 import time
 import glob as globmod
 from pathlib import Path
@@ -57,8 +54,8 @@ def _session_dir() -> str:
     return path
 
 
-def _run_pipeline(code: str, session_dir: str, cfg_overrides: dict | None = None, model_id: str | None = None) -> tuple[str | None, str | None]:
-    """Запускает pipeline и возвращает (xml_path, error)."""
+def _run_pipeline(code: str, session_dir: str, cfg_overrides: dict | None = None, model_id: str | None = None) -> tuple[str | None, float, str | None]:
+    """Запускает pipeline и возвращает (xml_path, cost, error)."""
     try:
         import pipeline as _pl
 
@@ -68,19 +65,12 @@ def _run_pipeline(code: str, session_dir: str, cfg_overrides: dict | None = None
         with open(code_path, "w", encoding="utf-8") as f:
             f.write(code)
 
-        result = _pl.run(code_path, xml_path, cfg_overrides=cfg_overrides, model_id=model_id)
-        return result, None
+        result, cost = _pl.run(code_path, xml_path, cfg_overrides=cfg_overrides, model_id=model_id)
+        return result, cost, None
 
     except Exception as exc:
-        return None, str(exc)
+        return None, 0.0, str(exc)
 
-
-# ── draw.io ссылка (временно отключена, будет использоваться позже) ────
-def _make_drawio_url(xml_content: str) -> str:  # noqa: F811
-    xml_bytes = xml_content.encode("utf-8")
-    compressed = zlib.compress(xml_bytes, 9)
-    b64 = base64.urlsafe_b64encode(compressed).decode("ascii")
-    return f"https://app.diagrams.net/#R{urllib.parse.quote(b64, safe='')}"
 
 
 # ── Поиск прошлых блок-схем в temp ──────────────────────────────────────
@@ -124,6 +114,8 @@ if "generating" not in st.session_state:
     st.session_state["generating"] = False
 if "last_code" not in st.session_state:
     st.session_state["last_code"] = None
+if "api_cost" not in st.session_state:
+    st.session_state["api_cost"] = None
 
 # Настройки по умолчанию (из builder.DEFAULT_CFG)
 _DEFAULT_SETTINGS = {
@@ -194,39 +186,32 @@ def _instructions_dialog():
 """)
 
 
-@st.dialog("Открыть в Draw.io", width="large")
-def _drawio_dialog(xml_content: str):
-    # Растягиваем модальное окно на всю ширину через CSS
-    st.markdown("""<style>
-[data-testid="stModal"] > div > div {
-    max-width: 98vw !important;
-    width: 98vw !important;
-}
-</style>""", unsafe_allow_html=True)
-    st.caption("Схема загружается в редактор Draw.io. Можно редактировать и экспортировать.")
+def _drawio_embed_html(xml_content: str) -> str:
+    """Возвращает HTML для встраивания draw.io с заданным XML."""
     xml_json = json.dumps(xml_content)
-    drawio_html = f"""<!DOCTYPE html>
-<html><head><style>
-  body{{margin:0;overflow:hidden;background:#1e1e1e;}}
-  iframe{{border:none;display:block;width:100%;height:680px;}}
-</style></head>
-<body>
-<iframe id="f" src="https://embed.diagrams.net/?proto=json&spin=1&noExitBtn=1&dark=1"></iframe>
-<script>
-var xml = {xml_json};
-var f = document.getElementById('f');
-window.addEventListener('message', function(e) {{
-  if (e.source !== f.contentWindow) return;
-  try {{
-    var msg = JSON.parse(e.data);
-    if (msg.event === 'init') {{
-      f.contentWindow.postMessage(JSON.stringify({{action:'load', xml:xml}}), '*');
-    }}
-  }} catch(ex) {{}}
-}});
-</script>
-</body></html>"""
-    stc.html(drawio_html, height=690, scrolling=False)
+    return f"""<!DOCTYPE html>
+    <html><head><style>
+      body{{margin:0;overflow:hidden;background:#1e1e1e;}}
+      iframe{{border:none;display:block;width:100%;height:100%;}}
+      html,body{{height:100%;}}
+    </style></head>
+    <body>
+    <iframe id="f" src="https://embed.diagrams.net/?proto=json&spin=1&noExitBtn=1&dark=1"></iframe>
+    <script>
+    var xml = {xml_json};
+    var f = document.getElementById('f');
+    window.addEventListener('message', function(e) {{
+      if (e.source !== f.contentWindow) return;
+      try {{
+        var msg = JSON.parse(e.data);
+        if (msg.event === 'init') {{
+          f.contentWindow.postMessage(JSON.stringify({{action:'load', xml:xml}}), '*');
+        }}
+      }} catch(ex) {{}}
+    }});
+    </script>
+    </body></html>"""
+
 
 
 @st.dialog("Баг-репорт", width="large")
@@ -412,7 +397,8 @@ with col_right:
             )
         with act_cols[1]:
             if st.button("Draw.io", use_container_width=True, icon=":material/open_in_new:", key="drawio_btn"):
-                _drawio_dialog(st.session_state["xml_content"])
+                stc.html('<script>parent.document.getElementById("drawio-editor").scrollIntoView({behavior:"smooth"});</script>', height=0)
+
 
         act_cols2 = st.columns(2)
         with act_cols2[0]:
@@ -488,7 +474,8 @@ with col_right:
                     )
                 with h_cols[2]:
                     if st.button("", use_container_width=True, icon=":material/open_in_new:", key=f"hist_drawio_{idx_s}"):
-                        _drawio_dialog(scheme["content"])
+                        st.session_state["xml_content"] = scheme["content"]
+                        st.rerun()
                 with h_cols[3]:
                     if st.button("", use_container_width=True, icon=":material/delete:", key=f"hist_del_{idx_s}"):
                         _confirm_delete_dialog(scheme["name"], scheme["path"])
@@ -533,8 +520,8 @@ with col_chat:
                         ):
                             _bug_report_dialog()
 
-        # Поле ввода ВНУТРИ контейнера чата
-        user_input = st.chat_input("Вставьте код или напишите сообщение...")
+    # Поле ввода ПОД контейнером чата — всегда внизу
+    user_input = st.chat_input("Вставьте код или напишите сообщение...")
 
     # --- Выбор модели + оценка стоимости ---
     model_names = list(MODELS.keys())
@@ -549,7 +536,10 @@ with col_chat:
 
     _lc = st.session_state.get("last_code")
     _mc = MODELS[selected_model_name]
-    if _lc:
+    _real_cost = st.session_state.get("api_cost")
+    if _real_cost:
+        st.caption(f"{_mc['desc']} · Последняя генерация: {_real_cost:.4f} ₽")
+    elif _lc:
         _tok, _cost = _estimate_cost(_lc)
         st.caption(f"{_mc['desc']} · ~{_tok} токенов · ≈{_cost:.4f} ₽")
     else:
@@ -558,6 +548,35 @@ with col_chat:
     # --- Кнопка инструкции ---
     if st.button(":material/help: Инструкция", key="instructions_btn"):
         _instructions_dialog()
+
+
+# ── ВСТРОЕННЫЙ РЕДАКТОР Draw.io (под основным лейаутом) ────────────────────
+if has_result and st.session_state["xml_content"]:
+    st.markdown('<div id="drawio-editor"></div>', unsafe_allow_html=True)
+
+    editor_cols = st.columns([6, 1])
+    with editor_cols[0]:
+        st.markdown(
+            '<div class="right-panel-title" style="margin-top:20px">'
+            '<span class="material-symbols-outlined">edit_note</span>'
+            'Редактор Draw.io'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    with editor_cols[1]:
+        with st.popover(":material/settings:", use_container_width=True):
+            if "editor_height" not in st.session_state:
+                st.session_state["editor_height"] = 1100
+            st.session_state["editor_height"] = st.slider(
+                "Высота редактора",
+                min_value=300,
+                max_value=1200,
+                value=st.session_state["editor_height"],
+                step=50,
+                key="_editor_height_slider",
+            )
+
+    stc.html(_drawio_embed_html(st.session_state["xml_content"]), height=st.session_state.get("editor_height", 600), scrolling=False)
 
 
 # ── НАСТРОЙКИ (под чатом, в expander с обводкой) ─────────────────────────
@@ -621,9 +640,10 @@ if st.session_state.get("generating") and st.session_state.get("pending_code"):
     session_dir = _session_dir()
     selected_model = st.session_state.get("selected_model", list(MODELS.keys())[0])
     model_id = MODELS.get(selected_model, {}).get("id")
-    xml_path, error = _run_pipeline(code, session_dir, st.session_state["cfg_settings"], model_id=model_id)
+    xml_path, cost, error = _run_pipeline(code, session_dir, st.session_state["cfg_settings"], model_id=model_id)
 
     st.session_state["generating"] = False
+    st.session_state["api_cost"] = cost
 
     st.session_state["messages"] = [
         m for m in st.session_state["messages"] if not m.get("is_status")
@@ -645,10 +665,11 @@ if st.session_state.get("generating") and st.session_state.get("pending_code"):
         st.session_state["xml_result"] = xml_path
         st.session_state["xml_content"] = xml_content
 
+        cost_text = f" (стоимость: {cost:.4f} ₽)" if cost else ""
         ts = int(time.time() * 1000)
         st.session_state["messages"].append({
             "role": "assistant",
-            "content": "Блок-схема успешно сгенерирована!",
+            "content": f"Блок-схема успешно сгенерирована!{cost_text}",
             "has_result": True,
             "ts": ts,
         })
