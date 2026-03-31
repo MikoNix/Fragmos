@@ -781,8 +781,36 @@ def empty_state() -> rx.Component:
                     _hover={"border": f"1px solid {BORDER_BLUE}",
                             "box_shadow": "0 12px 48px rgba(59,130,246,0.10)"},
                 ),
-                # ── Model + Settings row ──────────────────────────────────────
+                # ── Language + Mode + Settings row ────────────────────────────
                 rx.box(
+                    rx.box(
+                        rx.icon("code-2", size=13, color=MUTED),
+                        rx.el.select(
+                            rx.foreach(
+                                FragmosState.language_list,
+                                lambda l: rx.el.option(l, value=l),
+                            ),
+                            value=FragmosState.selected_language,
+                            on_change=FragmosState.set_language,
+                            style={
+                                "background": "transparent",
+                                "color": TEXT,
+                                "border": "none",
+                                "font_size": "12px",
+                                "font_weight": "500",
+                                "outline": "none",
+                                "cursor": "pointer",
+                                "font_family": SANS,
+                            },
+                        ),
+                        display="flex", align_items="center", gap="6px",
+                        padding="7px 12px",
+                        background=PANEL,
+                        border=f"1px solid {BORDER}",
+                        border_radius="10px",
+                        transition="all 0.15s",
+                        _hover={"border_color": BORDER_BLUE},
+                    ),
                     rx.box(
                         rx.icon("cpu", size=13, color=MUTED),
                         rx.el.select(
@@ -952,33 +980,6 @@ def diagram_viewer() -> rx.Component:
             rx.text("БЛОК-СХЕМА", font_size="10px", font_weight="700",
                     color=MUTED, letter_spacing="0.1em"),
             rx.box(flex="1"),
-            # Баланс пользователя
-            rx.box(
-                rx.icon("coins", size=11, color=ACCENT),
-                rx.text(f"Баланс: {AuthState.tokens_left} токенов", font_size="11px",
-                        font_weight="600", color=ACCENT),
-                display="flex", align_items="center", gap="4px",
-                padding="3px 9px",
-                background="rgba(59,130,246,0.10)",
-                border=f"1px solid rgba(59,130,246,0.22)",
-                border_radius="8px",
-            ),
-            # Потраченные токены за генерацию
-            rx.cond(
-                FragmosState.tokens_label != "",
-                rx.box(
-                    rx.icon("coins", size=11, color=SUCCESS),
-                    rx.text(FragmosState.tokens_label, font_size="11px",
-                            font_weight="600", color=SUCCESS),
-                    display="flex", align_items="center", gap="4px",
-                    padding="3px 9px",
-                    background="rgba(52,211,153,0.10)",
-                    border=f"1px solid rgba(52,211,153,0.22)",
-                    border_radius="8px",
-                    margin_left="6px",
-                ),
-                rx.box(),
-            ),
             display="flex", align_items="center", gap="6px",
             height="36px", padding="0 20px",
             background="rgba(255,255,255,0.02)",

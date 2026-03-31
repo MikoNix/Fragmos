@@ -1,7 +1,9 @@
 bcrypt
 tree-sitter
+tree-sitter-languages
 tree-sitter-cpp
 tree-sitter-c-sharp
+pyyaml
 colorama
 docxtpl
 python-docx

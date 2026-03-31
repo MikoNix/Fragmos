@@ -14,10 +14,16 @@ SCHEMES_DIR  = os.path.normpath(os.path.join(_STATE_DIR, "../../server/files/use
 BUG_DIR      = os.path.normpath(os.path.join(_STATE_DIR, "../../../db/bug_reports"))
 
 API_URL = os.getenv("FASTAPI_URL", "http://localhost:8001")
-# ── Models ────────────────────────────────────────────────────────────────────
-MODELS: dict[str, str] = {
-    "Bauman 19.701": "literal",
-    "GU 19.701":     "gost",
+# ── Modes ─────────────────────────────────────────────────────────────────────
+MODES: dict[str, str] = {
+    "Стандарт":    "default",
+    "ГОСТ 19.701": "loopLimit",
+}
+
+LANGUAGE_IDS: dict[str, str] = {
+    "Python": "python",
+    "C#":     "csharp",
+    "C++":    "cpp",
 }
 
 _EMPTY_XML = (
@@ -87,7 +93,8 @@ class FragmosState(rx.State):
 
     # ── Settings ──────────────────────────────────────────────────────────────
     settings_open: bool = False
-    selected_model: str = "Bauman 19.701"
+    selected_model: str = "Стандарт"
+    selected_language: str = "Python"
 
     cfg_show_bbox:            bool = True
     cfg_gap_y:                int  = 40
@@ -143,7 +150,11 @@ class FragmosState(rx.State):
 
     @rx.var
     def model_list(self) -> list[str]:
-        return list(MODELS.keys())
+        return list(MODES.keys())
+
+    @rx.var
+    def language_list(self) -> list[str]:
+        return list(LANGUAGE_IDS.keys())
 
     @rx.var
     def tokens_label(self) -> str:
@@ -231,42 +242,6 @@ class FragmosState(rx.State):
             self.user_uuid = auth_state.user_uuid
             self.user_tokens = auth_state.tokens_left
 
-    async def _deduct_tokens(self, amount: int) -> tuple[bool, str]:
-        """
-        Списывает токены через API.
-        Возвращает (success, error_message).
-        """
-        from koritsu.state.auth_state import AuthState
-        import httpx
-
-        if not self.user_uuid:
-            return False, "User not authenticated"
-
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.patch(
-                    f"{API_URL}/user/{self.user_uuid}",
-                    json={
-                        "item": "tokens_left",
-                        "olditem": "minus",
-                        "newitem": str(amount),
-                    },
-                    timeout=10,
-                )
-                data = resp.json()
-        except Exception as exc:
-            return False, f"API error: {exc}"
-
-        if "error" in data:
-            return False, data["error"]
-
-        # Обновляем локальный баланс и баланс в AuthState
-        self.user_tokens = int(data.get("success", "").split(": ")[1] if ": " in data.get("success", "") else self.user_tokens - amount)
-        auth_state = await self.get_state(AuthState)
-        auth_state.tokens_left = self.user_tokens
-
-        return True, ""
-
     def set_user_uuid(self, uuid: str):
         """Устанавливает UUID пользователя"""
         self.user_uuid = uuid
@@ -297,43 +272,15 @@ class FragmosState(rx.State):
         self.last_submitted_code = saved_code
         yield
 
-        # ── Шаг 1: оценка токенов ─────────────────────────────────────────
-        try:
-            async with httpx.AsyncClient() as client:
-                est_resp = await client.post(
-                    f"{API_URL}/fragmos/estimate",
-                    json={"code": saved_code, "model_id": MODELS.get(self.selected_model, "literal")},
-                    timeout=15,
-                )
-                est_data = est_resp.json()
-        except Exception as exc:
-            self.generation_error = f"Ошибка оценки токенов: {exc}"
-            self.is_generating = False
-            return
-
-        if "error" in est_data:
-            self.generation_error = est_data["error"]
-            self.is_generating = False
-            return
-
-        required = est_data.get("required_with_buffer", 0)
-        if self.user_tokens < required:
-            self.generation_error = (
-                f"Недостаточно токенов. "
-                f"Требуется: ~{required}, баланс: {self.user_tokens}"
-            )
-            self.is_generating = False
-            return
-
-        # ── Шаг 2: отправка в балансер ─────────────────────────────────────
+        # ── Отправка в балансер ────────────────────────────────────────────
         auth_state = await self.get_state(AuthState)
         username = auth_state.username or "unknown"
 
         payload = {
             "code": saved_code,
             "user_uuid": self.user_uuid,
-            "model_id": MODELS.get(self.selected_model),
-            "token_budget": self.user_tokens,
+            "language": LANGUAGE_IDS.get(self.selected_language, "python"),
+            "mode_id": MODES.get(self.selected_model, "default"),
             "cfg": self._cfg_dict(),
         }
 
@@ -376,31 +323,12 @@ class FragmosState(rx.State):
                     result = task_data.get("result", {})
                     if not isinstance(result, dict):
                         result = {}
-                    tokens = result.get("charged_tokens", 0)
                     fname = result.get("xml_filename", "")
-
-                    # Списываем токены
-                    if tokens > 0:
-                        deduct_ok, deduct_err = await self._deduct_tokens(tokens)
-                        if not deduct_ok:
-                            self.generation_error = f"Ошибка списания токенов: {deduct_err}"
-                            break
-
-                    self.last_tokens = tokens
-                    self.last_ai_response = result.get("ai_json", "")
                     success = True
                     break
 
                 elif status == "failed":
-                    error_text = task_data.get("error", "Ошибка генерации")
-                    # Извлекаем ai_json из ошибки если есть
-                    if "---AI_JSON---" in error_text:
-                        parts = error_text.split("---AI_JSON---", 1)
-                        self.generation_error = parts[0].strip()
-                        self.last_ai_response = parts[1].strip() if len(parts) > 1 else ""
-                    else:
-                        self.generation_error = error_text
-                        self.last_ai_response = error_text
+                    self.generation_error = task_data.get("error", "Ошибка генерации")
                     break
 
                 elif status == "expired":
@@ -422,8 +350,6 @@ class FragmosState(rx.State):
 
         except Exception as exc:
             self.generation_error = str(exc)
-            self.last_tokens = 0
-            self.last_ai_response = str(exc)
 
         self.is_generating = False
 
@@ -508,6 +434,9 @@ class FragmosState(rx.State):
 
     def set_model(self, val: str):
         self.selected_model = val
+
+    def set_language(self, val: str):
+        self.selected_language = val
 
     # ─────────────────────────────────────────────────────────────────────────
     # Delete confirmation

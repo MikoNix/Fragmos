@@ -771,6 +771,52 @@ def _split_functions(nodes):
 # ЗАПУСК
 # ═══════════════════════════════════════════════════════════════════════════
 
+def generate_from_code(code: str, language: str = 'python', out_path: str = '/tmp/fragmos_out.xml',
+                        mode_id: str = 'default', cfg_overrides: dict = None) -> str:
+    """
+    Полный pipeline: исходный код → XML flowchart.
+
+    Args:
+        code:          исходный код
+        language:      'python' | 'csharp' | 'cpp'
+        out_path:      путь для сохранения XML
+        mode_id:       'default' | 'loopLimit'
+        cfg_overrides: перегрузки конфигурации
+
+    Returns:
+        Путь к созданному XML-файлу.
+    """
+    import sys
+    _pkg_root = os.path.dirname(os.path.abspath(__file__))
+    if _pkg_root not in sys.path:
+        sys.path.insert(0, _pkg_root)
+
+    from ast_generators import get_ast_generator
+    from parser import parse_ast_to_flowchart
+
+    ast_dict = get_ast_generator(language).generate(code)
+
+    cfg, nodes = parse_ast_to_flowchart(ast_dict, mode_id=mode_id)
+    if cfg_overrides:
+        cfg.update(cfg_overrides)
+
+    if os.path.exists(out_path):
+        os.remove(out_path)
+
+    f = drawpyo.File()
+    f.file_name = os.path.basename(out_path)
+    f.file_path = os.path.dirname(os.path.abspath(out_path))
+
+    for page_name, func_nodes in _split_functions(nodes):
+        page = drawpyo.Page(file=f)
+        page.name = page_name
+        Renderer(page, func_nodes, center_x=500, start_y=20, cfg=cfg).render()
+
+    f.write()
+    print(f"Готово! Файл: {out_path}")
+    return out_path
+
+
 def generate(frg_path, out_path=None, cfg_overrides=None):
     import sys
     _pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -11,9 +11,13 @@
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Активируем виртуальный окружение
+# Активируем виртуальный окружение (или используем системное, если venv не существует)
 if [[ -f "$ROOT/venv/bin/activate" ]]; then
     source "$ROOT/venv/bin/activate"
+    PYTHON_BIN="$ROOT/venv/bin/python"
+else
+    echo -e "  ${YLW}·${RST} venv не найден, используется системное окружение"
+    PYTHON_BIN="python"
 fi
 
 LOGS="$ROOT/log"
@@ -140,7 +144,7 @@ cmd_start() {
     echo -e "${CYN}[1/2]${RST} Запуск uvicorn (service_api:app) на порту ${BLD}$UVICORN_PORT${RST}"
 
     cd "$SERVER_DIR"
-    nohup "$ROOT/venv/bin/python" -m uvicorn service_api:app \
+    nohup "$PYTHON_BIN" -m uvicorn service_api:app \
         --host 127.0.0.1 \
         --port "$UVICORN_PORT" \
         --workers 1 \

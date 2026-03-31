@@ -12,7 +12,6 @@ from contextlib import asynccontextmanager
 from balancer import balancer, router as balancer_router
 import asyncio
 import sys
-import tempfile
 
 _SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_SERVER_DIR)
@@ -43,22 +42,18 @@ _MODULES_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "../modu
 async def _fragmos_handler(payload: dict) -> dict:
     """
     Balancer handler for fragmos pipeline.
-    payload: {code, user_uuid, model_id, token_budget, cfg}
-    Returns: {xml_path, tokens, charged_tokens}
+    payload: {code, user_uuid, language, mode_id, cfg}
+    Returns: {xml_path, xml_filename, xml_content}
     """
     code = payload.get("code", "")
     user_uuid = payload.get("user_uuid", "")
-    model_id = payload.get("model_id")
-    token_budget = payload.get("token_budget")
-    token_spent = payload.get("token_spent", 0)
+    language = payload.get("language", "python")
+    mode_id = payload.get("mode_id", "default")
     cfg = payload.get("cfg", {})
 
     if not code.strip():
         raise ValueError("Empty code")
-    if not model_id:
-        raise ValueError("model_id is required")
 
-    # Prepare file paths
     user_dir = f"files/users/{user_uuid}/fragmos"
     os.makedirs(user_dir, exist_ok=True)
 
@@ -66,75 +61,39 @@ async def _fragmos_handler(payload: dict) -> dict:
     fname = f"Схема_{slug}.xml"
     xml_path = os.path.join(user_dir, fname)
 
-    tmp_dir = tempfile.mkdtemp(prefix="fragmos_")
-    code_path = os.path.join(tmp_dir, "code.txt")
-
-    with open(code_path, "w", encoding="utf-8") as f:
-        f.write(code)
-
     if _MODULES_DIR not in sys.path:
         sys.path.insert(0, _MODULES_DIR)
 
-    # Принудительно перезагружаем модули fragmos при каждом вызове,
-    # чтобы изменения в request.py/pipeline.py подхватывались без рестарта сервера
-    for _mod in ("request", "pipeline", "builder"):
+    for _mod in ("builder", "parser"):
         sys.modules.pop(_mod, None)
 
-    from pipeline import run as pipeline_run  # type: ignore
+    from builder import generate_from_code  # type: ignore
 
-    ai_json = ""
-    try:
-        effective_budget = (token_budget - token_spent) if token_budget is not None else None
-        result_path, charged, cost_rub, ai_json = await pipeline_run(
-            code_path, xml_path,
-            cfg_overrides=cfg,
-            model_id=model_id,
-            token_budget=effective_budget,
-        )
-    except Exception as exc:
-        # Если pipeline упал (например builder не смог парсить JSON),
-        # пытаемся прочитать сырой JSON из временного файла
-        json_path = os.path.splitext(code_path)[0] + ".json"
-        if not ai_json:
-            try:
-                with open(json_path, encoding="utf-8") as f:
-                    ai_json = f.read()
-            except Exception:
-                pass
-        raise RuntimeError(f"{exc}\n---AI_JSON---\n{ai_json}") from exc
-    finally:
-        try:
-            os.remove(code_path)
-            os.rmdir(tmp_dir)
-        except OSError:
-            pass
+    generate_from_code(
+        code,
+        language=language,
+        out_path=xml_path,
+        mode_id=mode_id,
+        cfg_overrides=cfg or None,
+    )
 
-    # Read the generated XML content to include in the result
     xml_content = ""
     try:
-        with open(result_path, encoding="utf-8") as f:
+        with open(xml_path, encoding="utf-8") as f:
             xml_content = f.read()
     except Exception:
         pass
 
     return {
-        "xml_path": result_path,
+        "xml_path": xml_path,
         "xml_filename": fname,
         "xml_content": xml_content,
-        "charged_tokens": charged,
-        "cost_rub": round(cost_rub, 2),
-        "ai_json": ai_json,
     }
 
 
 balancer.register_handler("fragmos", _fragmos_handler)
 
 _KLASSIS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "../modules/klassis"))
-
-
-class EstimateRequest(BaseModel):
-    code: str
-    model_id: str = "literal"
 
 
 @asynccontextmanager
@@ -201,35 +160,6 @@ async def klassis_generate(data: KlassisRequest):
 
     return {"xml_filename": fname, "xml_content": xml_content, "class_count": len(classes)}
 
-
-@app.post("/fragmos/estimate")
-async def fragmos_estimate(data: EstimateRequest):
-    """
-    Оценивает стоимость генерации в рублях и внутренних токенах.
-    Возвращает: {estimated_yandex, estimated_charged, required_with_buffer, estimated_cost_rub}
-    """
-    if not data.code.strip():
-        return {"error": "Empty code"}
-
-    if _MODULES_DIR not in sys.path:
-        sys.path.insert(0, _MODULES_DIR)
-
-    for _mod in ("request", "pipeline"):
-        sys.modules.pop(_mod, None)
-
-    from request import AI_API, TOKEN_BUFFER  # type: ignore
-
-    api = AI_API()
-    yandex_tokens = await api.estimate_tokens_from_text(data.code, prompt_key=data.model_id)
-    charged = api.charged_tokens(yandex_tokens)
-    required = charged + TOKEN_BUFFER
-
-    return {
-        "estimated_yandex": yandex_tokens,
-        "estimated_charged": charged,
-        "required_with_buffer": required,
-        "estimated_cost_rub": round(yandex_tokens * 0.4 / 1000, 4),
-    }
 
 # Раздаём файлы из files/ по URL /files/...
 os.makedirs("files", exist_ok=True)
