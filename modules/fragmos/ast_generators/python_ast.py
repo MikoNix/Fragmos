@@ -98,13 +98,10 @@ class PythonAST(ASTGenerator):
     def _visit_if(self, node) -> dict:
         condition = self._t(self._field(node, 'condition'))
         body = self._visit_block(self._field(node, 'consequence'))
-        else_body = []
-        alt = self._field(node, 'alternative')
-        if alt is not None:
-            if alt.type == 'elif_clause':
-                else_body = [self._visit_elif(alt)]
-            elif alt.type == 'else_clause':
-                else_body = self._visit_block(self._field(alt, 'body'))
+        # tree-sitter-python: all elif/else are flat children of if_statement
+        alternatives = [c for c in node.named_children
+                        if c.type in ('elif_clause', 'else_clause')]
+        else_body = self._build_elif_chain(alternatives)
         return {
             'type': 'if',
             'value': condition,
@@ -112,22 +109,19 @@ class PythonAST(ASTGenerator):
             'else_body': else_body,
         }
 
-    def _visit_elif(self, node) -> dict:
-        condition = self._t(self._field(node, 'condition'))
-        body = self._visit_block(self._field(node, 'consequence'))
-        else_body = []
-        alt = self._field(node, 'alternative')
-        if alt is not None:
-            if alt.type == 'elif_clause':
-                else_body = [self._visit_elif(alt)]
-            elif alt.type == 'else_clause':
-                else_body = self._visit_block(self._field(alt, 'body'))
-        return {
-            'type': 'if',
-            'value': condition,
-            'body': body,
-            'else_body': else_body,
-        }
+    def _build_elif_chain(self, alternatives: list) -> list:
+        if not alternatives:
+            return []
+        first = alternatives[0]
+        rest = alternatives[1:]
+        if first.type == 'elif_clause':
+            condition = self._t(self._field(first, 'condition'))
+            body = self._visit_block(self._field(first, 'consequence'))
+            return [{'type': 'if', 'value': condition, 'body': body,
+                     'else_body': self._build_elif_chain(rest)}]
+        if first.type == 'else_clause':
+            return self._visit_block(self._field(first, 'body'))
+        return []
 
     def _visit_for(self, node) -> dict:
         left = self._t(self._field(node, 'left'))

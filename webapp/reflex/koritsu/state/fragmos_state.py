@@ -7,6 +7,7 @@ import uuid
 import httpx
 import reflex as rx
 from .auth_state import AuthState
+from .balancer_state import BalancerState
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 _STATE_DIR   = os.path.dirname(os.path.abspath(__file__))
@@ -305,6 +306,7 @@ class FragmosState(rx.State):
                 return
 
             task_uuid = data["task"]["task_uuid"]
+            yield BalancerState.load_tasks
 
             # Поллим статус задачи
             success = False
@@ -352,6 +354,7 @@ class FragmosState(rx.State):
             self.generation_error = str(exc)
 
         self.is_generating = False
+        yield BalancerState.load_tasks
 
     def on_select_chat(self, chat_id: str):
         self.selected_chat_id = chat_id

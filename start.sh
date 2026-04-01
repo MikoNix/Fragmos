@@ -11,14 +11,9 @@
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Активируем виртуальный окружение (или используем системное, если venv не существует)
-if [[ -f "$ROOT/venv/bin/activate" ]]; then
-    source "$ROOT/venv/bin/activate"
-    PYTHON_BIN="$ROOT/venv/bin/python"
-else
-    echo -e "  ${YLW}·${RST} venv не найден, используется системное окружение"
-    PYTHON_BIN="python"
-fi
+# ── Цвета ─────────────────────────────────────────────────────────────────────
+GRN="\033[0;32m"; YLW="\033[1;33m"; RED="\033[0;31m"
+BLU="\033[0;34m"; CYN="\033[0;36m"; RST="\033[0m"; BLD="\033[1m"
 
 LOGS="$ROOT/log"
 PIDS="$LOGS/pids"
@@ -27,9 +22,30 @@ UVICORN_PORT=8001
 REFLEX_DIR="$ROOT/webapp/reflex"
 SERVER_DIR="$ROOT/server"
 
-# ── Цвета ─────────────────────────────────────────────────────────────────────
-GRN="\033[0;32m"; YLW="\033[1;33m"; RED="\033[0;31m"
-BLU="\033[0;34m"; CYN="\033[0;36m"; RST="\033[0m"; BLD="\033[1m"
+# ── venv: создать если нет, установить зависимости ────────────────────────────
+
+setup_venv() {
+    local VENV="$ROOT/venv"
+
+    if [[ ! -f "$VENV/bin/activate" ]]; then
+        echo -e "  ${YLW}·${RST} venv не найден — создаю..."
+        python3 -m venv "$VENV" || { echo -e "  ${RED}✗${RST} Не удалось создать venv. Установи python3-venv."; exit 1; }
+        echo -e "  ${GRN}✓${RST} venv создан"
+    fi
+
+    source "$VENV/bin/activate"
+    PYTHON_BIN="$VENV/bin/python"
+
+    # # Устанавливаем зависимости если есть requirements.txt
+    # for req in "$ROOT/requirements.txt" "$REFLEX_DIR/requirements.txt"; do
+    #     if [[ -f "$req" ]]; then
+    #         echo -e "  ${CYN}·${RST} Устанавливаю зависимости из ${req##$ROOT/}..."
+    #         "$PYTHON_BIN" -m pip install -q -r "$req" \
+    #             && echo -e "  ${GRN}✓${RST} ${req##$ROOT/} установлен" \
+    #             || echo -e "  ${YLW}⚠${RST} Ошибка при установке ${req##$ROOT/}"
+    #     fi
+    # done
+}
 
 # ── Вспомогательные функции ───────────────────────────────────────────────────
 
@@ -45,7 +61,6 @@ rotate_logs() {
             echo -e "  ${YLW}↻${RST} $log.log > $log.log.old (превысил 512KB)"
         fi
     done
-    # удаляем .old старше 7 дней
     find "$LOGS" -name "*.old" -mtime +7 -delete 2>/dev/null || true
 }
 
@@ -86,6 +101,12 @@ cmd_stop() {
     pkill -f "reflex run" 2>/dev/null && stopped=$((stopped + 1)) || true
     pkill -f "uvicorn service_api" 2>/dev/null && stopped=$((stopped + 1)) || true
 
+    # Убиваем Node.js/Next.js фронтенд который остаётся после reflex
+    pkill -f "next-server" 2>/dev/null || true
+    pkill -f "next dev" 2>/dev/null || true
+    # По порту — гарантированно чистим 3000
+    fuser -k 3000/tcp 2>/dev/null || true
+
     echo -e "${GRN}Готово. Остановлено: $stopped процессов.${RST}"
 }
 
@@ -117,8 +138,8 @@ cmd_logs() {
 
 cmd_start() {
     ensure_dirs
+    setup_venv
 
-    # Проверяем не запущено ли уже
     local rpid; rpid=$(read_pid "reflex")
     local upid; upid=$(read_pid "uvicorn")
 
@@ -133,7 +154,6 @@ cmd_start() {
     echo -e "${BLD}${BLU}Koritsu — запуск...${RST}"
     echo ""
 
-    # Загрузить .env
     if [[ -f "$ROOT/.env" ]]; then
         set -a; source "$ROOT/.env"; set +a
     else
@@ -145,7 +165,7 @@ cmd_start() {
 
     cd "$SERVER_DIR"
     nohup "$PYTHON_BIN" -m uvicorn service_api:app \
-        --host 127.0.0.1 \
+        --host 0.0.0.0 \
         --port "$UVICORN_PORT" \
         --workers 1 \
         >> "$LOGS/uvicorn.log" 2>&1 &
@@ -164,7 +184,7 @@ cmd_start() {
     echo -e "${CYN}[2/2]${RST} Запуск reflex run в ${BLD}$REFLEX_DIR${RST}"
 
     cd "$REFLEX_DIR"
-    nohup reflex run \
+    nohup "$ROOT/venv/bin/reflex" run \
         --frontend-port 3000 \
         --backend-port 8002 \
         --backend-host 0.0.0.0 \
@@ -180,7 +200,6 @@ cmd_start() {
         echo -e "   ${YLW}⚡${RST} reflex стартует (первый запуск может занять 10-30с)"
     fi
 
-    # ── Ссылки ────────────────────────────────────────────────────────────────
     echo ""
     echo -e "${BLD}──────────────────────────────────────${RST}"
     echo -e "  ${GRN}Reflex      ${RST}  http://localhost:3000"

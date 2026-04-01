@@ -7,7 +7,6 @@ from koritsu.state.admin_state import AdminState
 from koritsu.state.balancer_state import BalancerState
 from koritsu.components.header import header
 
-# ── Endfield Palette ─────────────────────────────────────────────────────────
 BG = "linear-gradient(135deg, #08080f 0%, #0b0f1a 50%, #07101e 100%)"
 PANEL = "rgba(15, 18, 30, 0.85)"
 PANEL_LIGHT = "rgba(255, 255, 255, 0.03)"

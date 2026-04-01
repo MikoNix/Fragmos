@@ -105,7 +105,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(balancer_router)
-DB_PATH = os.getenv("DATABASE_NAME", "files/koritsu.db")
+DB_PATH = os.getenv("DATABASE_NAME", "files/koritsu.db").strip()
 
 
 class KlassisRequest(BaseModel):

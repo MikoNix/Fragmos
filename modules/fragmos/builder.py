@@ -49,7 +49,7 @@ class Base(drawpyo.diagram.Object):
         self.height = 40
         self.position = (cx - 60, y)
         self.apply_style_string(
-            "whiteSpace=wrap;rounded=1;dashed=0;html=1;arcSize=50;")
+            "ellipse;whiteSpace=wrap;rounded=0;dashed=0;html=1;")
 
 
 class Execute(drawpyo.diagram.Object):

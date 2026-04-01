@@ -27,7 +27,7 @@ def parse_ast_to_flowchart(ast_dict: dict, mode_id: str = 'default') -> tuple[di
     """
     mode = get_mode(mode_id)
     cfg = dict(DEFAULT_CFG)
-    converter = _Converter(mode)
+    converter = _Converter(mode, mode_id)
     nodes = converter.convert_program(ast_dict)
     return cfg, nodes
 
@@ -37,8 +37,9 @@ def parse_ast_to_flowchart(ast_dict: dict, mode_id: str = 'default') -> tuple[di
 # ═══════════════════════════════════════════════════════════════════════════
 
 class _Converter:
-    def __init__(self, mode: dict):
+    def __init__(self, mode: dict, mode_id: str = 'default'):
         self._blocks = mode['blocks']
+        self._mode_id = mode_id
 
     # ── top level ─────────────────────────────────────────────────────────
 
@@ -47,9 +48,16 @@ class _Converter:
         nodes = []
         for node in ast_dict.get('body', []):
             nodes.extend(self._convert(node))
-        # Если нет function_def — оборачиваем всё в START/STOP сами
+        # Если нет function_def — оборачиваем всё в START/STOP
         if not any(n.get('type') == 'start' for n in nodes):
-            nodes = [{'type': 'start', 'value': ''}] + nodes + [{'type': 'stop', 'value': ''}]
+            if self._mode_id == 'loopLimit':
+                nodes = (
+                    [{'type': 'loop_limit_start', 'value': 'начало'}]
+                    + nodes
+                    + [{'type': 'loop_limit_end', 'value': 'конец'}]
+                )
+            else:
+                nodes = [{'type': 'start', 'value': ''}] + nodes + [{'type': 'stop', 'value': ''}]
         return nodes
 
     # ── dispatcher ────────────────────────────────────────────────────────
