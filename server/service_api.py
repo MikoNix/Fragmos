@@ -12,7 +12,6 @@ from contextlib import asynccontextmanager
 from balancer import balancer, router as balancer_router
 import asyncio
 import sys
-import tempfile
 
 _SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_SERVER_DIR)
@@ -39,26 +38,29 @@ def _valid_username(s: str) -> bool:
 
 _MODULES_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "../modules/fragmos"))
 
+# ── Contextualizer ────────────────────────────────────────────────────────────
+_CONTEXTUALIZER_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "../modules"))
+if _CONTEXTUALIZER_DIR not in sys.path:
+    sys.path.insert(0, _CONTEXTUALIZER_DIR)
+
+from contextualizer.router import router as ctx_router, ctx_handler  # type: ignore  # noqa: E402
+
 
 async def _fragmos_handler(payload: dict) -> dict:
     """
     Balancer handler for fragmos pipeline.
-    payload: {code, user_uuid, model_id, token_budget, cfg}
-    Returns: {xml_path, tokens, charged_tokens}
+    payload: {code, user_uuid, language, mode_id, cfg}
+    Returns: {xml_path, xml_filename, xml_content}
     """
     code = payload.get("code", "")
     user_uuid = payload.get("user_uuid", "")
-    model_id = payload.get("model_id")
-    token_budget = payload.get("token_budget")
-    token_spent = payload.get("token_spent", 0)
+    language = payload.get("language", "python")
+    mode_id = payload.get("mode_id", "default")
     cfg = payload.get("cfg", {})
 
     if not code.strip():
         raise ValueError("Empty code")
-    if not model_id:
-        raise ValueError("model_id is required")
 
-    # Prepare file paths
     user_dir = f"files/users/{user_uuid}/fragmos"
     os.makedirs(user_dir, exist_ok=True)
 
@@ -66,73 +68,40 @@ async def _fragmos_handler(payload: dict) -> dict:
     fname = f"Схема_{slug}.xml"
     xml_path = os.path.join(user_dir, fname)
 
-    tmp_dir = tempfile.mkdtemp(prefix="fragmos_")
-    code_path = os.path.join(tmp_dir, "code.txt")
-
-    with open(code_path, "w", encoding="utf-8") as f:
-        f.write(code)
-
     if _MODULES_DIR not in sys.path:
         sys.path.insert(0, _MODULES_DIR)
 
-    # Принудительно перезагружаем модули fragmos при каждом вызове,
-    # чтобы изменения в request.py/pipeline.py подхватывались без рестарта сервера
-    for _mod in ("request", "pipeline", "builder"):
+    for _mod in ("builder", "parser"):
         sys.modules.pop(_mod, None)
 
-    from pipeline import run as pipeline_run  # type: ignore
+    from builder import generate_from_code  # type: ignore
 
-    ai_json = ""
-    try:
-        result_path, charged, cost_rub, ai_json = await pipeline_run(
-            code_path, xml_path,
-            cfg_overrides=cfg,
-            model_id=model_id,
-            token_budget=token_budget,
-            token_spent=token_spent,
-        )
-    except Exception as exc:
-        # Если pipeline упал (например builder не смог парсить JSON),
-        # пытаемся прочитать сырой JSON из временного файла
-        json_path = os.path.splitext(code_path)[0] + ".json"
-        if not ai_json:
-            try:
-                with open(json_path, encoding="utf-8") as f:
-                    ai_json = f.read()
-            except Exception:
-                pass
-        raise RuntimeError(f"{exc}\n---AI_JSON---\n{ai_json}") from exc
-    finally:
-        try:
-            os.remove(code_path)
-            os.rmdir(tmp_dir)
-        except OSError:
-            pass
+    generate_from_code(
+        code,
+        language=language,
+        out_path=xml_path,
+        mode_id=mode_id,
+        cfg_overrides=cfg or None,
+    )
 
-    # Read the generated XML content to include in the result
     xml_content = ""
     try:
-        with open(result_path, encoding="utf-8") as f:
+        with open(xml_path, encoding="utf-8") as f:
             xml_content = f.read()
     except Exception:
         pass
 
     return {
-        "xml_path": result_path,
+        "xml_path": xml_path,
         "xml_filename": fname,
         "xml_content": xml_content,
-        "charged_tokens": charged,
-        "cost_rub": round(cost_rub, 2),
-        "ai_json": ai_json,
     }
 
 
 balancer.register_handler("fragmos", _fragmos_handler)
+balancer.register_handler("contextualizer", ctx_handler)
 
-
-class EstimateRequest(BaseModel):
-    code: str
-    model_id: str = "literal"
+_KLASSIS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "../modules/klassis"))
 
 
 @asynccontextmanager
@@ -144,37 +113,62 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(balancer_router)
-DB_PATH = os.getenv("DATABASE_NAME", "files/koritsu.db")
+app.include_router(ctx_router)
+DB_PATH = os.getenv("DATABASE_NAME", "files/koritsu.db").strip()
 
 
-@app.post("/fragmos/estimate")
-async def fragmos_estimate(data: EstimateRequest):
-    """
-    Оценивает стоимость генерации в рублях и внутренних токенах.
-    Возвращает: {estimated_yandex, estimated_charged, required_with_buffer, estimated_cost_rub}
-    """
+class KlassisRequest(BaseModel):
+    code:      str
+    language:  str = "C++"
+    user_uuid: str
+
+
+@app.post("/klassis/generate")
+async def klassis_generate(data: KlassisRequest):
     if not data.code.strip():
-        return {"error": "Empty code"}
+        return {"error": "Пустой код"}
+    if not _valid_uuid(data.user_uuid):
+        return {"error": "Invalid UUID"}
 
-    if _MODULES_DIR not in sys.path:
-        sys.path.insert(0, _MODULES_DIR)
+    if _KLASSIS_DIR not in sys.path:
+        sys.path.insert(0, _KLASSIS_DIR)
 
-    for _mod in ("request", "pipeline"):
+    for _mod in ("extractor", "builder"):
         sys.modules.pop(_mod, None)
 
-    from request import AI_API, TOKEN_BUFFER  # type: ignore
+    try:
+        from extractor import extract_cpp, extract_cs  # type: ignore
+        from builder   import build_xml                # type: ignore
+    except ImportError as e:
+        return {"error": f"Модуль klassis не найден: {e}"}
 
-    api = AI_API()
-    yandex_tokens = await api.estimate_tokens_from_text(data.code, prompt_key=data.model_id)
-    charged = api.charged_tokens(yandex_tokens)
-    required = charged + TOKEN_BUFFER
+    try:
+        classes = extract_cpp(data.code) if data.language == "C++" else extract_cs(data.code)
+    except ImportError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Ошибка парсинга: {e}"}
 
-    return {
-        "estimated_yandex": yandex_tokens,
-        "estimated_charged": charged,
-        "required_with_buffer": required,
-        "estimated_cost_rub": round(yandex_tokens * 0.4 / 1000, 4),
-    }
+    if not classes:
+        return {"error": "Классы не найдены. Вставьте заголовочный файл (.h/.hpp) или определения классов."}
+
+    try:
+        xml_content = build_xml(classes)
+    except Exception as e:
+        return {"error": f"Ошибка генерации XML: {e}"}
+
+    user_dir = f"files/users/{data.user_uuid}/klassis"
+    os.makedirs(user_dir, exist_ok=True)
+    slug  = str(uuid.uuid4())[:8]
+    fname = f"Классы_{slug}.xml"
+    try:
+        with open(os.path.join(user_dir, fname), "w", encoding="utf-8") as f:
+            f.write(xml_content)
+    except Exception as e:
+        return {"error": f"Ошибка сохранения: {e}"}
+
+    return {"xml_filename": fname, "xml_content": xml_content, "class_count": len(classes)}
+
 
 # Раздаём файлы из files/ по URL /files/...
 os.makedirs("files", exist_ok=True)
@@ -344,6 +338,7 @@ def register(data: RegisterRequest):
             user_folder = f"files/users/{user_id}"
             print(f"[register] creating folders: {os.path.abspath(user_folder)}")
             os.makedirs(f"{user_folder}/fragmos", exist_ok=True)
+            os.makedirs(f"{user_folder}/klassis", exist_ok=True)
             os.makedirs(f"{user_folder}/engrafo/templates", exist_ok=True)
             os.makedirs(f"{user_folder}/engrafo/reports", exist_ok=True)
             print(f"[register] folders created, generating icon...")
@@ -407,7 +402,7 @@ def get_user_data(uuid: str):
 def get_user_folder_files(uuid: str, folder: str):
     if not _valid_uuid(uuid):
         return {"error": "Invalid UUID"}
-    if folder not in ("fragmos", "engrafo"):
+    if folder not in ("fragmos", "engrafo", "klassis"):
         return {"error": "Unable to get folder"}
     if folder == "engrafo":
         return {"error": "Service not available"}
@@ -430,9 +425,12 @@ async def upload_avatar(uuid: str, file: UploadFile = File(...)):
     if row is None:
         return {"error": "User not exist"}
 
-    # Проверяем формат — только PNG
-    if file.content_type != "image/png" or not (file.filename or "").lower().endswith(".png"):
-        return {"error": "Only PNG files are allowed"}
+    # Проверяем формат — PNG или JPEG
+    allowed_types = {"image/png", "image/jpeg", "image/jpg"}
+    allowed_exts = {".png", ".jpg", ".jpeg"}
+    fname_lower = (file.filename or "").lower()
+    if file.content_type not in allowed_types or not any(fname_lower.endswith(e) for e in allowed_exts):
+        return {"error": "Only PNG or JPEG files are allowed"}
 
     contents = await file.read()
     if len(contents) > MAX_AVATAR_SIZE:
@@ -442,8 +440,9 @@ async def upload_avatar(uuid: str, file: UploadFile = File(...)):
     os.makedirs(user_folder, exist_ok=True)
     icon_path = os.path.join(user_folder, "icon.png")
 
-    with open(icon_path, "wb") as f:
-        f.write(contents)
+    import io
+    img = Image.open(io.BytesIO(contents)).convert("RGBA")
+    img.save(icon_path, format="PNG")
 
     conn = get_db()
     conn.execute("UPDATE users SET icon = ? WHERE uuid = ?", (icon_path, uuid))
@@ -754,6 +753,7 @@ def register_with_referral(ref_uuid: str, data: RegisterRequest):
         try:
             user_folder = f"files/users/{user_id}"
             os.makedirs(f"{user_folder}/fragmos", exist_ok=True)
+            os.makedirs(f"{user_folder}/klassis", exist_ok=True)
             os.makedirs(f"{user_folder}/engrafo/templates", exist_ok=True)
             os.makedirs(f"{user_folder}/engrafo/reports", exist_ok=True)
             icon_path = generate_icon(user_id, user_folder)

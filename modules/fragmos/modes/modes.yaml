@@ -1,0 +1,14 @@
+modes:
+  default:
+    description: "Стандартный режим: циклы как обычные блоки"
+    blocks:
+      for: for_default       # шестиугольник
+      while: while           # ромб с возвратной стрелкой
+      if: if                 # ромб с YES/NO ветками
+
+  loopLimit:
+    description: "Режим ограничения цикла: for/while как LOOP_LIMIT (ГОСТ)"
+    blocks:
+      for: loop_limit        # овал-открывашка + овал-закрывашка
+      while: loop_limit
+      if: if

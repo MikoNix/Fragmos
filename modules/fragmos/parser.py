@@ -1,303 +1,332 @@
+"""
+parser.py — Трансформирует унифицированный AST (от ast_generators) в список nodes
+для Builder, применяя режим отображения из modes/modes.yaml.
+"""
+
 import re
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# МАППИНГ КЛЮЧЕВЫХ СЛОВ .frg → внутренние типы
-# ═══════════════════════════════════════════════════════════════════════════
-
-_KEYWORD_MAP = {
-    'START':      'start',
-    'STOP':       'stop',
-    'EXEC':       'execute',
-    'PROCESS':    'process',
-    'IO':         'io',
-    'LOOP_START': 'loop_limit_start',
-    'LOOP_END':   'loop_limit_end',
-    'IF':         'if',
-    'WHILE':      'while',
-    'FOR':        'for_default',
-}
-
-# Ключевые слова, которые открывают блок (закрываются через END)
-_BLOCK_KEYWORDS = {'IF', 'WHILE', 'FOR'}
-
-# Регулярка для извлечения текста в кавычках
-_QUOTED_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+from builder import DEFAULT_CFG
+from modes import get_mode
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ЕДИНАЯ ТОЧКА ВХОДА
 # ═══════════════════════════════════════════════════════════════════════════
 
-def parse_frg(text, base_cfg=None):
+def parse_ast_to_flowchart(ast_dict: dict, mode_id: str = 'default') -> tuple[dict, list]:
     """
-    Парсит текст .frg формата.
-    Возвращает (cfg, nodes).
+    Преобразует унифицированный AST в (cfg, nodes) для Builder.
+
+    Args:
+        ast_dict: {'type': 'program', 'body': [...], 'metadata': {...}}
+        mode_id:  ID режима из modes.yaml ('default' | 'loopLimit')
+
+    Returns:
+        (cfg, nodes) — конфигурация и список блоков для Builder.
+
+    Raises:
+        ValueError: если mode_id не найден.
     """
-    from builder import DEFAULT_CFG
-    cfg = dict(base_cfg or DEFAULT_CFG)
-
-    lines = _preprocess(text)
-
-    # Парсим CONFIG если есть
-    start_idx = 0
-    if lines and lines[0][1] == 'CONFIG:':
-        start_idx = _parse_config(lines, cfg)
-
-    nodes = _parse_block(lines, start_idx, len(lines))[0]
+    mode = get_mode(mode_id)
+    cfg = dict(DEFAULT_CFG)
+    converter = _Converter(mode, mode_id)
+    nodes = converter.convert_program(ast_dict)
     return cfg, nodes
 
 
-def parse_frg_file(path, base_cfg=None):
-    """Читает файл и парсит его."""
-    with open(path, encoding='utf-8') as f:
-        return parse_frg(f.read(), base_cfg)
-
-
-# Обратная совместимость
-parse_frg_json = parse_frg
-parse_frg_json_file = parse_frg_file
-
-
 # ═══════════════════════════════════════════════════════════════════════════
-# ПРЕДОБРАБОТКА
+# КОНВЕРТЕР
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _preprocess(text):
-    """
-    Разбивает текст на строки, убирает пустые, комментарии, лишние пробелы.
-    Возвращает список (номер_строки, строка) для сообщений об ошибках.
-    """
-    result = []
-    for i, raw in enumerate(text.splitlines(), 1):
-        line = raw.strip()
-        if not line or line.startswith('#'):
-            continue
-        result.append((i, line))
-    return result
+class _Converter:
+    def __init__(self, mode: dict, mode_id: str = 'default'):
+        self._blocks = mode['blocks']
+        self._mode_id = mode_id
+        self._is_gost = (mode_id == 'loopLimit')
 
+    # ── top level ─────────────────────────────────────────────────────────
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ПАРСИНГ CONFIG
-# ═══════════════════════════════════════════════════════════════════════════
+    def convert_program(self, ast_dict: dict) -> list:
+        """Конвертирует program-узел. Каждая function_def → START…STOP."""
+        nodes = []
+        for node in ast_dict.get('body', []):
+            nodes.extend(self._convert(node))
+        # Если нет function_def — оборачиваем всё в START/STOP
+        if not any(n.get('type') == 'start' for n in nodes):
+            if self._is_gost:
+                nodes = (
+                    [{'type': 'start', 'value': 'Начало'}]
+                    + nodes
+                    + [{'type': 'stop', 'value': 'Конец'}]
+                )
+            else:
+                nodes = [{'type': 'start', 'value': ''}] + nodes + [{'type': 'stop', 'value': ''}]
+        return nodes
 
-def _parse_config(lines, cfg):
-    """
-    Парсит секцию CONFIG: ... END.
-    Возвращает индекс первой строки после END.
-    """
-    i = 1  # пропускаем "CONFIG:"
-    while i < len(lines):
-        lineno, line = lines[i]
-        i += 1
-        if line.upper() == 'END':
-            return i
+    # ── dispatcher ────────────────────────────────────────────────────────
 
-        # Формат: ключ = значение
-        if '=' not in line:
-            raise SyntaxError(f"Строка {lineno}: ожидается 'ключ = значение' в CONFIG, получено: {line!r}")
+    def _convert(self, node: dict) -> list:
+        t = node.get('type')
+        if t == 'function_def':
+            return self._function(node)
+        if t == 'class_def':
+            return self._class_def(node)
+        if t == 'if' or t == 'try':
+            return [self._if_node(node)]
+        if t == 'for':
+            return self._for(node)
+        if t == 'while':
+            return self._while(node)
+        if t == 'match':
+            if self._is_gost:
+                return [self._switch_node(node)]
+            return self._match_to_ifs(node)
+        if t == 'return':
+            return [{'type': 'stop', 'value': node.get('value', '')}]
+        if t == 'assignment':
+            val = node.get('value', '')
+            if self._is_gost:
+                val = self._translate_gost(val)
+            return [{'type': 'execute', 'value': val}]
+        if t == 'call':
+            return [{'type': 'process', 'value': node.get('value', '')}]
+        if t == 'io':
+            return [{'type': 'io', 'value': self._format_io(node.get('value', ''))}]
+        if t == 'expression':
+            val = node.get('value', '')
+            if self._is_gost:
+                val = self._translate_gost(val)
+            return [{'type': 'execute', 'value': val}]
+        return []
 
-        key, val = line.split('=', 1)
-        key = key.strip()
-        val = val.strip()
+    def _convert_body(self, body: list) -> list:
+        result = []
+        for node in body:
+            result.extend(self._convert(node))
+        return result
 
-        # Убираем инлайн-комментарий
-        if '#' in val:
-            val = val[:val.index('#')].strip()
+    # ── function_def ──────────────────────────────────────────────────────
 
-        # Приведение типов
-        if val.lower() in ('true', 'false'):
-            cfg[key] = val.lower() == 'true'
+    def _function(self, node: dict) -> list:
+        name       = node.get('name', '')
+        full_value = node.get('value', name)
+        body       = node.get('body', [])
+
+        if self._is_gost:
+            is_main    = name.lower() in ('main', '__main__')
+            start_label = 'Начало' if is_main else f'Начало {name}'
+            stop_label  = 'Конец'  if is_main else f'Конец {name}'
         else:
-            try:
-                cfg[key] = int(val)
-            except ValueError:
-                try:
-                    cfg[key] = float(val)
-                except ValueError:
-                    cfg[key] = val
+            start_label = full_value
+            stop_label  = f'конец {name}'
 
-    raise SyntaxError("CONFIG: не закрыт — отсутствует END")
+        nodes = [{'type': 'start', 'value': start_label}]
+        body_nodes = self._convert_body(body)
+        has_stop = body_nodes and body_nodes[-1].get('type') == 'stop'
+        nodes.extend(body_nodes)
+        if not has_stop:
+            nodes.append({'type': 'stop', 'value': stop_label})
+        return nodes
 
+    # ── class_def ─────────────────────────────────────────────────────────
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ОСНОВНОЙ ПАРСЕР БЛОКОВ
-# ═══════════════════════════════════════════════════════════════════════════
+    def _class_def(self, node: dict) -> list:
+        """Разворачиваем методы класса как обычные function_def."""
+        nodes = []
+        for child in node.get('body', []):
+            if child.get('type') == 'function_def':
+                nodes.extend(self._function(child))
+        return nodes
 
-def _extract_value(line):
-    """Извлекает текст в кавычках из строки. Возвращает текст или пустую строку."""
-    m = _QUOTED_RE.search(line)
-    if m:
-        return m.group(1).replace('\\"', '"')
-    return ''
+    # ── if / try ──────────────────────────────────────────────────────────
 
+    def _if_node(self, node: dict) -> dict:
+        condition = node.get('value', '')
+        if self._is_gost:
+            condition = self._translate_gost(condition)
+        children = self._convert_body(node.get('body', []))
+        else_children = self._convert_body(node.get('else_body', []))
+        return {
+            'type': 'if',
+            'value': condition,
+            'children': children,
+            'else_children': else_children,
+        }
 
-def _get_keyword(line):
-    """
-    Извлекает ключевое слово из строки.
-    'IF "условие"' → 'IF'
-    'YES:' → 'YES:'
-    """
-    upper = line.upper()
+    # ── for ───────────────────────────────────────────────────────────────
 
-    # Проверяем двухсловные ключевые слова
-    for kw in ('LOOP_START', 'LOOP_END'):
-        if upper.startswith(kw):
-            return kw
+    def _for(self, node: dict) -> list:
+        header = node.get('value', '')
+        if self._is_gost:
+            header = self._translate_gost(header)
+        body = self._convert_body(node.get('body', []))
+        block_type = self._blocks.get('for', 'for_default')
 
-    # Однословные
-    word = line.split()[0].upper() if line.split() else ''
+        if block_type == 'loop_limit':
+            return [
+                {'type': 'loop_limit_start', 'value': header},
+                *body,
+                {'type': 'loop_limit_end', 'value': header},
+            ]
+        # default: for_default (шестиугольник) с children
+        return [{'type': 'for_default', 'value': header, 'children': body}]
 
-    # YES: / NO: — метки веток IF
-    if line.rstrip().upper() in ('YES:', 'NO:'):
-        return line.rstrip().upper()
+    # ── while ─────────────────────────────────────────────────────────────
 
-    return word
+    def _while(self, node: dict) -> list:
+        condition = node.get('value', '')
+        if self._is_gost:
+            condition = self._translate_gost(condition)
+        body = self._convert_body(node.get('body', []))
+        block_type = self._blocks.get('while', 'while')
 
+        if block_type == 'loop_limit':
+            return [
+                {'type': 'loop_limit_start', 'value': condition},
+                *body,
+                {'type': 'loop_limit_end', 'value': condition},
+            ]
+        # default: while (ромб с возвратной стрелкой) с children
+        return [{'type': 'while', 'value': condition, 'children': body}]
 
-def _parse_block(lines, start, end):
-    """
-    Парсит линейную последовательность строк [start, end) в список nodes.
-    Рекурсивно обрабатывает IF/WHILE/FOR блоки.
-    Возвращает (nodes, next_index).
-    """
-    nodes = []
-    i = start
+    # ── match → switch (ГОСТ) / вложенные IF (стандарт) ──────────────────
 
-    while i < end:
-        lineno, line = lines[i]
-        kw = _get_keyword(line)
+    def _switch_node(self, node: dict) -> dict:
+        """ГОСТ: match → switch-блок для специального рендерера."""
+        cases = []
+        for case in node.get('cases', []):
+            pattern = case['pattern']
+            body    = self._convert_body(case.get('body', []))
+            cases.append({'pattern': pattern, 'body': body})
+        return {'type': 'switch', 'value': node.get('value', ''), 'cases': cases}
 
-        if kw == 'END':
-            return nodes, i + 1
+    def _match_to_ifs(self, node: dict) -> list:
+        """Стандарт: match → цепочка вложенных IF."""
+        subject = node.get('value', '')
+        cases   = node.get('cases', [])
 
-        if kw == 'IF':
-            node, i = _parse_if(lines, i, end)
-            nodes.append(node)
+        def build(cases):
+            if not cases:
+                return None
+            case, rest = cases[0], cases[1:]
+            body    = self._convert_body(case.get('body', []))
+            pattern = case['pattern']
+            if pattern == '_':
+                return {'_default': body}
+            condition = f'{subject} == {pattern}'
+            else_body = []
+            if rest:
+                nxt = build(rest)
+                if nxt is not None:
+                    else_body = nxt.get('_default', [nxt]) if '_default' in nxt else [nxt]
+            return {'type': 'if', 'value': condition, 'body': body, 'else_body': else_body}
 
-        elif kw in ('WHILE', 'FOR'):
-            node, i = _parse_loop(lines, i, end, kw)
-            nodes.append(node)
+        result = build(cases)
+        if result is None or '_default' in result:
+            return []
+        return [result]
 
-        elif kw in _KEYWORD_MAP:
-            value = _extract_value(line)
-            nodes.append({'type': _KEYWORD_MAP[kw], 'value': value})
-            i += 1
+    # ═══════════════════════════════════════════════════════════════════════
+    # IO ФОРМАТИРОВАНИЕ (оба режима)
+    # ═══════════════════════════════════════════════════════════════════════
 
-        elif kw in ('YES:', 'NO:'):
-            # Эти метки обрабатываются внутри _parse_if
-            raise SyntaxError(f"Строка {lineno}: {kw} вне блока IF")
+    def _format_io(self, value: str) -> str:
+        """Добавляет префикс 'Вывод:' / 'Ввод:' к IO-блокам для всех языков."""
+        v = value.strip()
 
-        else:
-            raise SyntaxError(f"Строка {lineno}: неизвестное ключевое слово: {line.split()[0]!r}")
+        # Python: print(...)
+        m = re.match(r'^print\s*\((.*)\)$', v, re.DOTALL)
+        if m:
+            return f'Вывод: {m.group(1).strip()}'
 
-    return nodes, i
+        # Python: a = input() / a = int(input()) / a, b = map(int, input().split())
+        m = re.match(r'^([\w\s,\*]+?)\s*=\s*.+\binput\s*\(', v, re.DOTALL)
+        if m:
+            lhs = m.group(1).strip()
+            return f'Ввод: {lhs}'
 
+        # Python: input(...)
+        m = re.match(r'^input\s*\((.*)\)$', v, re.DOTALL)
+        if m:
+            content = m.group(1).strip()
+            return f'Ввод: {content}' if content else 'Ввод: данные'
 
-def _parse_if(lines, start, end):
-    """
-    Парсит IF блок:
-        IF "условие"
-          YES:
-            ...
-          NO:
-            ...
-        END
-    """
-    lineno, line = lines[start]
-    condition = _extract_value(line)
-    i = start + 1
+        # C++: cout << ... (с возможной цепочкой << endl / "\n")
+        if re.match(r'^cout\s*<<', v):
+            content = re.sub(r'^cout\s*<<\s*', '', v)
+            content = re.sub(r'\s*<<\s*endl\s*$', '', content)
+            content = re.sub(r'\s*<<\s*"\\n"\s*$', '', content)
+            content = re.sub(r'\s*<<\s*\'\\n\'\s*$', '', content)
+            content = content.rstrip(';').strip()
+            return f'Вывод: {content}'
 
-    yes_nodes = []
-    no_nodes = []
+        # C++: cin >> ...
+        if re.match(r'^cin\s*>>', v):
+            content = re.sub(r'^cin\s*>>\s*', '', v).rstrip(';').strip()
+            return f'Ввод: {content}'
 
-    # Собираем ветки до END
-    while i < end:
-        lineno_cur, line_cur = lines[i]
-        kw = _get_keyword(line_cur)
+        # C++: printf(...)
+        m = re.match(r'^printf\s*\((.*)\)$', v, re.DOTALL)
+        if m:
+            return f'Вывод: {m.group(1).strip()}'
 
-        if kw == 'END':
-            return {
-                'type': 'if',
-                'value': condition,
-                'children': yes_nodes,
-                'else_children': no_nodes,
-            }, i + 1
+        # C++: scanf(...)
+        m = re.match(r'^scanf\s*\((.*)\)$', v, re.DOTALL)
+        if m:
+            return f'Ввод: {m.group(1).strip()}'
 
-        if kw == 'YES:':
-            i += 1
-            yes_nodes, i = _parse_branch(lines, i, end)
+        # C++: puts(...)
+        m = re.match(r'^puts\s*\((.*)\)$', v, re.DOTALL)
+        if m:
+            return f'Вывод: {m.group(1).strip()}'
 
-        elif kw == 'NO:':
-            i += 1
-            no_nodes, i = _parse_branch(lines, i, end)
+        # C#: Console.WriteLine(...)
+        m = re.match(r'^Console\.WriteLine\s*\((.*)\)$', v, re.DOTALL)
+        if m:
+            return f'Вывод: {m.group(1).strip()}'
 
-        else:
-            # Если нет YES:/NO: меток — всё тело идёт в YES
-            yes_nodes, i = _parse_block(lines, i, end)
-            # _parse_block остановится на END
-            if i < end:
-                lineno_end, line_end = lines[i]
-                if _get_keyword(line_end) == 'END':
-                    i += 1  # съедаем END
+        # C#: Console.Write(...)
+        m = re.match(r'^Console\.Write\s*\((.*)\)$', v, re.DOTALL)
+        if m:
+            return f'Вывод: {m.group(1).strip()}'
 
-            return {
-                'type': 'if',
-                'value': condition,
-                'children': yes_nodes,
-                'else_children': no_nodes,
-            }, i
+        # C#: Console.ReadLine() / Console.Read()
+        if re.match(r'^Console\.Read', v):
+            return 'Ввод: данные'
 
-    raise SyntaxError(f"IF на строке {lines[start][0]}: не закрыт — отсутствует END")
+        return value
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # ГОСТ ПЕРЕВОД ОПЕРАТОРОВ (только режим loopLimit)
+    # ═══════════════════════════════════════════════════════════════════════
 
-def _parse_branch(lines, start, end):
-    """
-    Парсит содержимое ветки YES: или NO: до следующей метки (NO:, END)
-    или до END блока IF.
-    """
-    nodes = []
-    i = start
+    def _translate_gost(self, value: str) -> str:
+        """Переводит операторы кода в русский псевдокод для режима ГОСТ."""
+        v = value
 
-    while i < end:
-        lineno, line = lines[i]
-        kw = _get_keyword(line)
+        # Составные присваивания (до замены == и !=)
+        v = re.sub(r'(\w+)\s*\+=\s*(.+)',  r'\1 = \1 + \2', v)
+        v = re.sub(r'(\w+)\s*-=\s*(.+)',  r'\1 = \1 - \2', v)
+        v = re.sub(r'(\w+)\s*\*=\s*(.+)', r'\1 = \1 * \2', v)
+        v = re.sub(r'(\w+)\s*/=\s*(.+)',  r'\1 = \1 / \2', v)
 
-        # Ветка заканчивается при NO:, YES: или END
-        if kw in ('NO:', 'YES:', 'END'):
-            return nodes, i
+        # Инкремент / декремент
+        v = re.sub(r'\+\+(\w+)', r'\1 = \1 + 1', v)
+        v = re.sub(r'(\w+)\+\+', r'\1 = \1 + 1', v)
+        v = re.sub(r'--(\w+)',   r'\1 = \1 - 1', v)
+        v = re.sub(r'(\w+)--',   r'\1 = \1 - 1', v)
 
-        if kw == 'IF':
-            node, i = _parse_if(lines, i, end)
-            nodes.append(node)
-        elif kw in ('WHILE', 'FOR'):
-            node, i = _parse_loop(lines, i, end, kw)
-            nodes.append(node)
-        elif kw in _KEYWORD_MAP:
-            value = _extract_value(line)
-            nodes.append({'type': _KEYWORD_MAP[kw], 'value': value})
-            i += 1
-        else:
-            raise SyntaxError(f"Строка {lineno}: неизвестное ключевое слово: {line.split()[0]!r}")
+        # Операторы сравнения (порядок важен: >= до >, <= до <, != до =, == до =)
+        v = v.replace('!=', '≠')
+        v = v.replace('>=', '≥')
+        v = v.replace('<=', '≤')
+        v = v.replace('==', '=')
 
-    return nodes, i
+        # Логические операторы
+        v = v.replace('&&', 'и')
+        v = v.replace('||', 'или')
 
+        # Логическое НЕ: !x → не x (не трогаем уже обработанное ≠)
+        v = re.sub(r'!(\w)', r'не \1', v)
 
-def _parse_loop(lines, start, end, loop_kw):
-    """
-    Парсит WHILE/FOR блок:
-        WHILE "условие"
-          ...
-        END
-    """
-    lineno, line = lines[start]
-    value = _extract_value(line)
-    node_type = _KEYWORD_MAP[loop_kw]
-
-    children, next_i = _parse_block(lines, start + 1, end)
-
-    return {
-        'type': node_type,
-        'value': value,
-        'children': children,
-    }, next_i
+        return v

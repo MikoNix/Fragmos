@@ -1,11 +1,21 @@
 bcrypt
-colorama
+tree-sitter==0.21.3
+tree-sitter-languages==1.10.2
+pyyaml
 docxtpl
 python-docx
 drawpyo
-openai
 reflex
 fastapi
+uvicorn
 python-dotenv
 httpx
 Pillow
+# contextualizer
+pdfplumber
+pytesseract
+py7zr
+pdf2image
+openai
+anthropic
+python-multipart
